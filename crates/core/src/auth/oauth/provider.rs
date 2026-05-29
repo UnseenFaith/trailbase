@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use oauth2::{
-  AuthUrl, Client, ClientId, ClientSecret, EndpointNotSet, EndpointSet, RedirectUrl,
+  AuthType, AuthUrl, Client, ClientId, ClientSecret, EndpointNotSet, EndpointSet, RedirectUrl,
   StandardRevocableToken, TokenUrl,
 };
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,11 @@ pub trait OAuthProvider {
 
   fn settings(&self) -> Result<OAuthClientSettings, AuthError>;
 
+  // Override for providers (e.g. Twitch) that don't accept Basic-auth client credentials.
+  fn auth_type(&self) -> AuthType {
+    AuthType::BasicAuth
+  }
+
   fn oauth_client(&self, state: &AppState) -> Result<OAuthClient, AuthError> {
     let Some(ref site_url) = *state.site_url() else {
       return Err(AuthError::Internal(
@@ -100,7 +105,8 @@ pub trait OAuthProvider {
       .set_client_secret(ClientSecret::new(settings.client_secret))
       .set_auth_uri(AuthUrl::from_url(settings.auth_url))
       .set_token_uri(TokenUrl::from_url(settings.token_url))
-      .set_redirect_uri(RedirectUrl::from_url(redirect_url));
+      .set_redirect_uri(RedirectUrl::from_url(redirect_url))
+      .set_auth_type(self.auth_type());
 
     return Ok(client);
   }

@@ -77,6 +77,10 @@ impl OAuthProvider for TwitchOAuthProvider {
     });
   }
 
+  fn auth_type(&self) -> oauth2::AuthType {
+    return oauth2::AuthType::RequestBody;
+  }
+
   fn oauth_scopes(&self) -> Vec<&'static str> {
     return vec!["user:read:email"];
   }
@@ -107,10 +111,25 @@ impl OAuthProvider for TwitchOAuthProvider {
       profile_image_url: Option<String>,
     }
 
-    let user = response
-      .json::<TwitchUser>()
+    #[derive(Deserialize, Debug)]
+    struct TwitchUsersResponse {
+      data: Vec<TwitchUser>,
+    }
+
+    let body = response
+      .bytes()
       .await
-      .map_err(|err| AuthError::Internal(err.into()))?;
+      .map_err(|err| AuthError::FailedDependency(err.into()))?;
+
+    let mut parsed: TwitchUsersResponse = serde_json::from_slice(&body).map_err(|err| {
+      let body = String::from_utf8_lossy(&body);
+      AuthError::Internal(format!("failed to parse Twitch user response ({err}): {body}").into())
+    })?;
+
+    let user = parsed
+      .data
+      .pop()
+      .ok_or_else(|| AuthError::FailedDependency("Twitch user response had empty data".into()))?;
 
     return Ok(OAuthUser {
       provider_user_id: user.id,

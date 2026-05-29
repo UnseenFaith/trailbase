@@ -257,17 +257,17 @@ async fn get_or_create_user(
     .set_pkce_verifier(PkceCodeVerifier::new(server_pkce_code_verifier))
     .request_async(&ReqwestClient(http_client))
     .await
-    .map_err(|err| {
-      return if cfg!(debug_assertions) {
-        match err {
-          oauth2::RequestTokenError::Parse(_path, resp) => {
-            AuthError::Internal(String::from_utf8_lossy(&resp).into())
-          }
-          err => AuthError::FailedDependency(format!("{err:?}").into()),
-        }
-      } else {
-        AuthError::FailedDependency(err.into())
-      };
+    .or_else(|err| match err {
+      // Some providers (e.g. Twitch) return non-RFC-6749 token bodies. Try to
+      // normalize known quirks and re-parse before giving up.
+      oauth2::RequestTokenError::Parse(_path, resp) => parse_nonstandard_token_response(&resp)
+        .map_err(|err| {
+          let body = String::from_utf8_lossy(&resp);
+          AuthError::FailedDependency(
+            format!("token endpoint returned unparseable body ({err}): {body}").into(),
+          )
+        }),
+      err => Err(AuthError::FailedDependency(format!("{err:?}").into())),
     })?;
 
   // Call provider's USER_INFO endpoint with the tokens acquired above.
@@ -352,6 +352,26 @@ async fn user_by_provider_id(
       .read_query_value::<DbUser>(QUERY, params!(provider_id as i64, provider_user_id))
       .await?,
   );
+}
+
+// Re-parses a token endpoint body after fixing known non-RFC quirks, e.g. Twitch
+// returning `scope` as a JSON array instead of a space-delimited string.
+fn parse_nonstandard_token_response(body: &[u8]) -> Result<TokenResponse, serde_json::Error> {
+  let mut value: serde_json::Value = serde_json::from_slice(body)?;
+
+  if let Some(obj) = value.as_object_mut()
+    && let Some(scope) = obj.get_mut("scope")
+    && let Some(arr) = scope.as_array()
+  {
+    let joined = arr
+      .iter()
+      .filter_map(|v| v.as_str())
+      .collect::<Vec<_>>()
+      .join(" ");
+    *scope = serde_json::Value::String(joined);
+  }
+
+  return serde_json::from_value(value);
 }
 
 struct ReqwestClient(reqwest::Client);
